@@ -165,8 +165,52 @@ def load_model(model_path, peft_model_path=None):
     return model, tokenizer
 
 def use_api(prompt, model, tokenizer, temp, iters=1):
+    """
+    NOTE: Updated to optionally accept a LocalLLMClient instance from the main repo.
+    When tokenizer is None and model exposes .generate(), we call the shared LLM client
+    to align OCTree LLM usage with other baselines.
+    """
     res = []
 
+    if tokenizer is None and hasattr(model, "generate"):
+        for _ in range(iters):
+            res.append(
+                model.generate(
+                    system_prompt="",
+                    user_prompt=prompt,
+                    extra_kwargs={
+                        "max_new_tokens": 256,
+                        "temperature": temp,
+                        "top_p": 0.95,
+                    },
+                )
+            )
+        return res
+
+    # Original tokenizer/model-based generation retained for reference.
+    # messages = [
+    #     {"role": "system", "content": ""},
+    #     {"role": "user", "content": prompt},
+    # ]
+    # prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    # inputs = tokenizer(prompt, return_tensors="pt")
+    # inputs.to(model.device)
+    #
+    # with torch.no_grad():
+    #     output = model.generate(
+    #         **inputs,
+    #         do_sample=True,
+    #         max_new_tokens=256,
+    #         pad_token_id=tokenizer.eos_token_id,
+    #         top_k=50,
+    #         top_p=0.95,
+    #         temperature=temp,
+    #         num_return_sequences=iters,
+    #     )
+    # prompt_length = inputs.input_ids.shape[1]
+    # for idx in range(output.shape[0]):
+    #     res.append(tokenizer.decode(output[idx][prompt_length:], skip_special_tokens=True))
+    # return res
     messages = [
         {"role": "system", "content": ""},
         {"role": "user", "content": prompt},

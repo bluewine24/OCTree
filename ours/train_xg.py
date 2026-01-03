@@ -1,26 +1,28 @@
-import json
-import numpy as np
-from sklearn import tree
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import accuracy_score
-import openai
-import random
-import os
-import time
-import copy
 import argparse
-from catboost import CatBoostClassifier
+import copy
+import json
+import os
+import random
+import re
+import sys
+from pathlib import Path
+
+import numpy as np
+import torch
+from sklearn import tree
+from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import MinMaxScaler
 from xgboost import XGBClassifier
-from utils_xg import evaluate, gen_prompt, tree_to_code, get_cart, evaluate_init, add_column, load_model, use_api
-import re, torch
-import importlib
-from transformers import (
-    AutoConfig,
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    BitsAndBytesConfig,
-)
+
+from utils_xg import evaluate, gen_prompt, tree_to_code, get_cart, evaluate_init, add_column, use_api
 from params import xgb_params_dict
+
+# Route OCTree LLM calls through the main repo's LocalLLMClient for consistency
+# with other baselines (shared auth/model loading and logging).
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from ontology_fe.llm_client import LocalLLMClient
 
 parser = argparse.ArgumentParser(description = 'ours')
 parser.add_argument('--data_name', default = 'phoneme', type = str)
@@ -45,7 +47,15 @@ torch.backends.cudnn.benchmark = False
 os.environ["PYTHONHASHSEED"] = str(0)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model, tokenizer = load_model(args.model_name, None)
+# NOTE: Switched to LocalLLMClient to align with the main repo LLM calling.
+# model, tokenizer = load_model(args.model_name, None)
+model = LocalLLMClient(
+    model_id=args.model_name,
+    max_new_tokens=256,
+    temperature=1.0,
+    top_p=0.95,
+)
+tokenizer = None
 
 xtrain = np.load(f'../data/{name}/seed{seed}/xtrain{args.step-1}.npy')
 xval = np.load(f'../data/{name}/seed{seed}/xval{args.step-1}.npy')
