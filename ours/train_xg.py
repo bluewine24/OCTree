@@ -6,6 +6,7 @@ import random
 import re
 import sys
 from pathlib import Path
+from datetime import datetime
 
 import numpy as np
 import torch
@@ -35,6 +36,33 @@ args = parser.parse_args()
 name = args.data_name
 seed = args.seed
 steps = args.num_steps
+start_time = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+workspace_root = Path(os.getenv("OCTREE_WORKSPACE", Path(__file__).resolve().parents[2] / "loop_workspace"))
+exp_name = os.getenv("OCTREE_EXP_NAME", f"exp1_{name}")
+log_dir = (workspace_root / exp_name / "logs").resolve()
+log_dir.mkdir(parents=True, exist_ok=True)
+run_log_path = log_dir / f"octree_step_log_{name}_seed{seed}_{start_time}.log"
+
+class _Tee:
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for stream in self._streams:
+            stream.write(data)
+            stream.flush()
+
+    def flush(self):
+        for stream in self._streams:
+            stream.flush()
+
+_log_file = open(run_log_path, "a", encoding="utf-8", buffering=1)
+sys.stdout = _Tee(sys.stdout, _log_file)
+sys.stderr = _Tee(sys.stderr, _log_file)
+
+def _log(message: str) -> None:
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}", flush=True)
 
 # fix seed
 random.seed(0)
@@ -56,6 +84,8 @@ model = LocalLLMClient(
     top_p=0.95,
 )
 tokenizer = None
+_log(f"[OCTree] Run log: {run_log_path}")
+_log(f"[OCTree] LLM init done (model={args.model_name})")
 
 xtrain = np.load(f'../data/{name}/seed{seed}/xtrain{args.step-1}.npy')
 xval = np.load(f'../data/{name}/seed{seed}/xval{args.step-1}.npy')
@@ -63,8 +93,10 @@ xtest = np.load(f'../data/{name}/seed{seed}/xtest{args.step-1}.npy')
 ytrain = np.load(f'../data/{name}/seed{seed}/ytrain.npy')
 yval = np.load(f'../data/{name}/seed{seed}/yval.npy')
 ytest = np.load(f'../data/{name}/seed{seed}/ytest.npy')
+_log(f"[OCTree] Data loaded ({name}, seed={seed}, step={args.step-1})")
 
 param = xgb_params_dict[f"{name}/seed{seed}"]
+_log(f"[OCTree] XGBoost params loaded for {name}/seed{seed}")
 
 train_acc_list = []
 score_list = []
@@ -76,6 +108,7 @@ dt_list = []
 _, best_val, best_test = evaluate_init(xtrain, ytrain, xval, yval, xtest, ytest, param)
 
 print("Step 0 | Val: {:.2f} | Test: {:.2f}".format(best_val*100, best_test*100))
+_log("[OCTree] Initial evaluation complete")
 
 # Train initial predictor
 best_val = 0
@@ -139,10 +172,13 @@ pattern = r"x{}\s*=\s*\[.*?\]".format(len(xtrain[0]) + 1)
 
 # Optimize start
 for step in range(steps):
+    _log(f"[OCTree] Step {step+1}/{steps} start")
     prompt = gen_prompt(r_list, dt_list, score_list, len(xtrain[0])+1)
     all_status = 0
     while all_status == 0:
+        _log("[OCTree] Requesting LLM candidates...")
         answer_temp1 = use_api(prompt, model, tokenizer, 1.0)
+        _log(f"[OCTree] LLM returned {len(answer_temp1)} candidates")
 
         for num_iter in range(len(answer_temp1)):
             try:
@@ -170,6 +206,7 @@ for step in range(steps):
                         np.save(f"../data/{name}/seed{seed}/xtrain{args.step}.npy", new_xtrain)
                         np.save(f"../data/{name}/seed{seed}/xval{args.step}.npy", new_xval)
                         np.save(f"../data/{name}/seed{seed}/xtest{args.step}.npy", new_xtest)
+                        _log(f"[OCTree] Step {step+1}: improved val={val_acc:.4f}, saved new columns")
                     elif val_acc == np.max(np.array(score_list)):
                         idxes = np.where(np.array(score_list) == val_acc)[0]
                         if train_acc < np.min(np.array(train_acc_list)[idxes]):
@@ -178,6 +215,7 @@ for step in range(steps):
                             np.save(f"../data/{name}/seed{seed}/xtrain{args.step}.npy", new_xtrain)
                             np.save(f"../data/{name}/seed{seed}/xval{args.step}.npy", new_xval)
                             np.save(f"../data/{name}/seed{seed}/xtest{args.step}.npy", new_xtest)                  
+                            _log(f"[OCTree] Step {step+1}: tie-break saved new columns")
                     
                     r_list.append(extracted_text)
                     score_list.append(val_acc)
